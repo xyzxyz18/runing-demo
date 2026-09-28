@@ -5,6 +5,8 @@ services:
     restart: unless-stopped
     ports:
       - "${BIND_ADDRESS:-0.0.0.0}:${PORT:-8000}:8000"
+    environment:
+      PACE_MAX_UPLOAD_GB: "${PACE_MAX_UPLOAD_GB:-2}"
     volumes:
       - pace_data:/data
     healthcheck:

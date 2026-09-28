@@ -10,7 +10,9 @@ RUN apt-get -o Acquire::Retries=5 update && apt-get -o Acquire::Retries=5 instal
     libgl1 libglib2.0-0 libx11-6 ffmpeg fonts-noto-cjk && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
-RUN pip install --no-cache-dir --timeout 60 --retries 5 -r requirements.txt
+RUN pip install --no-cache-dir --timeout 20 --retries 2 -r requirements.txt || \
+    pip install --no-cache-dir --timeout 60 --retries 5 \
+      --index-url https://mirrors.aliyun.com/pypi/simple -r requirements.txt
 
 COPY app.py main.py config.py ./
 COPY analysis ./analysis

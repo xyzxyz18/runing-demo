@@ -76,6 +76,31 @@ class WebAppTests(unittest.TestCase):
         self.assertNotEqual(response.get_json()["id"], created["id"])
         self.assertEqual(submit.call_count, 2)
 
+    def test_deletes_completed_history_and_files(self):
+        job_id = "delete-job"
+        folder = Path(self.temp_dir.name) / job_id
+        folder.mkdir()
+        (folder / "job.json").write_text("{}", encoding="utf-8")
+        web_app.jobs[job_id] = {"id": job_id, "state": "completed"}
+
+        response = self.client.delete(f"/api/jobs/{job_id}")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.get_json()["deleted"])
+        self.assertNotIn(job_id, web_app.jobs)
+        self.assertFalse(folder.exists())
+
+    def test_cannot_delete_running_history(self):
+        job_id = "running-job"
+        folder = Path(self.temp_dir.name) / job_id
+        folder.mkdir()
+        web_app.jobs[job_id] = {"id": job_id, "state": "running"}
+
+        response = self.client.delete(f"/api/jobs/{job_id}")
+
+        self.assertEqual(response.status_code, 409)
+        self.assertTrue(folder.exists())
+
 
 if __name__ == "__main__":
     unittest.main()

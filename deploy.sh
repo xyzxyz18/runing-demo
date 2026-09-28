@@ -3,13 +3,23 @@
 set -Eeuo pipefail
 
 cd "$(dirname "$0")"
+# Optional local overrides.  Copy .env.example to .env once; the defaults
+# below keep a plain `./deploy.sh` fully usable without any extra setup.
+if [[ -f .env ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  source .env
+  set +a
+fi
 PORT="${PORT:-8000}"
 BIND_ADDRESS="${BIND_ADDRESS:-0.0.0.0}"
+PACE_MAX_UPLOAD_GB="${PACE_MAX_UPLOAD_GB:-2}"
 if [[ ! "$PORT" =~ ^[0-9]+$ ]] || (( PORT < 1 || PORT > 65535 )); then
   echo "PORT 必须是 1-65535 之间的整数" >&2
   exit 1
 fi
 export PORT BIND_ADDRESS
+export PACE_MAX_UPLOAD_GB
 
 as_root() {
   if (( EUID == 0 )); then "$@"; else sudo "$@"; fi
@@ -60,9 +70,9 @@ fi
 
 compose() {
   if "${DOCKER[@]}" compose version >/dev/null 2>&1; then
-    "${DOCKER[@]}" compose "$@"
+    "${DOCKER[@]}" compose -f compose.yaml "$@"
   elif command -v docker-compose >/dev/null 2>&1; then
-    if [[ "${DOCKER[0]}" == sudo ]]; then sudo docker-compose "$@"; else docker-compose "$@"; fi
+    if [[ "${DOCKER[0]}" == sudo ]]; then sudo docker-compose -f compose.yaml "$@"; else docker-compose -f compose.yaml "$@"; fi
   else
     echo "未找到 Docker Compose。请安装 Compose 后重试。" >&2
     exit 1
@@ -71,7 +81,7 @@ compose() {
 
 compose config --quiet
 printf '正在构建并启动跑姿分析服务…\n'
-compose up -d --build
+compose up -d --build --remove-orphans
 container_id="$(compose ps -q pace-lab)"
 if [[ -z "$container_id" ]]; then
   echo "服务容器未创建，请运行 docker compose logs pace-lab 查看原因。" >&2

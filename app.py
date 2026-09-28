@@ -29,7 +29,21 @@ ALLOWED_EXTENSIONS = {".mp4", ".mov", ".avi"}
 ARTIFACTS = {"annotated.mp4", "player.mp4", "landmarks.csv", "metrics.json", "report.png", "report.pdf", "report.html", "timeline.json"}
 
 app = Flask(__name__)
-app.config["MAX_CONTENT_LENGTH"] = 2 * 1024 * 1024 * 1024
+
+
+def _max_upload_bytes() -> int:
+    """Read the upload limit once, while keeping a safe default for bad values."""
+    raw = os.environ.get("PACE_MAX_UPLOAD_GB", "2")
+    try:
+        gigabytes = float(raw)
+        if not 0.1 <= gigabytes <= 20:
+            raise ValueError
+    except ValueError:
+        gigabytes = 2.0
+    return int(gigabytes * 1024 * 1024 * 1024)
+
+
+app.config["MAX_CONTENT_LENGTH"] = _max_upload_bytes()
 
 jobs: Dict[str, Dict[str, object]] = {}
 jobs_lock = threading.Lock()
@@ -261,6 +275,27 @@ def reanalyze_job(job_id: str):
     persist_job_metadata(new_id, new_job)
     executor.submit(run_analysis, new_id, copied_source, output_dir)
     return jsonify(id=new_id, status_url=url_for("job_status", job_id=new_id)), 202
+
+
+@app.delete("/api/jobs/<job_id>")
+def delete_job(job_id: str):
+    """Delete one history entry and every file belonging to that analysis."""
+    with jobs_lock:
+        job = jobs.get(job_id)
+        if job is None:
+            abort(404)
+        if job.get("state") in {"queued", "running"}:
+            return jsonify(error="分析进行中，完成后才能删除"), 409
+        output_dir = JOBS_DIR / job_id
+        jobs.pop(job_id, None)
+        try:
+            shutil.rmtree(output_dir)
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            jobs[job_id] = job
+            return jsonify(error=f"删除文件失败：{exc}"), 500
+    return jsonify(id=job_id, deleted=True)
 
 
 @app.get("/results/<job_id>/<filename>")

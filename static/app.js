@@ -468,6 +468,8 @@ function createHistoryCard(job) {
   view.addEventListener('click', () => openHistoryResult(job.id)); actions.append(view);
   const rerun = document.createElement('button'); rerun.textContent = '重新分析'; rerun.className = 'rerun'; rerun.disabled = !job.can_reanalyze;
   rerun.addEventListener('click', () => reanalyzeHistory(job.id)); actions.append(rerun);
+  const remove = document.createElement('button'); remove.textContent = '删除记录'; remove.className = 'delete';
+  remove.addEventListener('click', () => deleteHistory(job.id, job.filename || '历史记录', card)); actions.append(remove);
   body.append(actions); card.append(preview, body); return card;
 }
 
@@ -488,6 +490,16 @@ async function reanalyzeHistory(jobId) {
   $('#statusCard').classList.remove('hidden', 'error');
   $('#statusTitle').textContent = '正在重新分析'; $('#statusMessage').textContent = '已使用保留的原视频创建新任务…';
   pollJob(payload.status_url);
+}
+
+async function deleteHistory(jobId, filename, card) {
+  if (!window.confirm(`确定删除“${filename}”及其所有分析文件吗？此操作无法撤销。`)) return;
+  const response = await fetch(`/api/jobs/${jobId}`, { method: 'DELETE' });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) { alert(payload.error || '无法删除历史记录'); return; }
+  card.remove();
+  const remaining = $('#historyGrid').children.length;
+  $('#historyEmpty').classList.toggle('hidden', remaining > 0);
 }
 
 $('#historyUploadButton').addEventListener('click', () => { switchMode('upload'); window.location.reload(); });

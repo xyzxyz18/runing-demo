@@ -31,7 +31,7 @@ python app.py
 
 ### 分析历史与数据
 
-浏览器界面产生的上传视频与结果默认保存在 `output/jobs/<任务 ID>/`，包括原视频 `source.<扩展名>` 和下述分析文件。设置 `PACE_DATA_DIR` 可更改 `output` 的位置。历史页可以查看已有结果；原视频仍在时可重新分析，新结果单独保存，不覆盖旧任务。旧任务保留原结果；在历史页点击“重新分析”可生成新版轨迹和 PDF。
+浏览器界面产生的上传视频与结果默认保存在 `output/jobs/<任务 ID>/`，包括原视频 `source.<扩展名>` 和下述分析文件。设置 `PACE_DATA_DIR` 可更改 `output` 的位置。历史页可以查看已有结果；原视频仍在时可重新分析，新结果单独保存，不覆盖旧任务。旧任务保留原结果；在历史页点击“重新分析”可生成新版轨迹和 PDF，也可以点击“删除记录”清理某条历史及其上传视频、报告文件。分析进行中不能删除。
 
 所有视频和摄像头画面都由当前服务处理。部署到远程服务器时，浏览器会把画面发送到该服务器。
 
@@ -54,22 +54,27 @@ python main.py input/test.mp4 --output output
 
 ## 部署到服务器
 
-适用 Debian/Ubuntu Linux 服务器。将本项目的最新代码推送到 GitHub 后，在服务器执行：
+适用 Debian/Ubuntu Linux 服务器。服务器只需要能联网，并有一个可以执行 `sudo` 的用户。将本项目推送到 GitHub 后，完整部署流程只有下面三步：
 
 ```bash
-git clone https://github.com/xyzxyz18/runing-demo.git
-cd runing-demo
+git clone <你的 GitHub 仓库地址>
+cd <仓库目录>
 ./deploy.sh
 ```
 
-脚本在 Docker 缺失时尝试通过 apt 安装 Docker 和 Compose，然后构建镜像、启动服务、等待健康检查。默认监听服务器的所有网卡，地址为 `http://服务器公网IP:8000`。云平台安全组与服务器防火墙需允许 TCP 8000。可在执行时改端口或只允许本机访问：
+`deploy.sh` 会自动检查并安装 Docker/Compose（Debian/Ubuntu）、构建镜像、创建持久化数据卷、启动服务并等待健康检查。默认监听服务器的所有网卡，地址为 `http://服务器公网IP:8000`。云平台安全组与服务器防火墙需允许 TCP 8000。
+
+需要改端口或上传上限时，复制配置示例再执行：
 
 ```bash
-PORT=8080 ./deploy.sh
-BIND_ADDRESS=127.0.0.1 ./deploy.sh
+cp .env.example .env
+# 编辑 .env，例如 PORT=8080
+./deploy.sh
 ```
 
-分析历史和上传视频保存在 Docker 的 `pace_data` 卷中，容器重建后仍可读取。更新时进入项目目录，运行 `git pull && ./deploy.sh`。检查状态与日志可运行 `docker compose ps`、`docker compose logs -f pace-lab`。
+也可以只对本次执行覆盖配置：`PORT=8080 ./deploy.sh`。
+
+分析历史和上传视频保存在 Docker 的 `pace_data` 卷中，容器重建后仍可读取。更新时进入项目目录，运行 `git pull && ./deploy.sh`。检查状态与日志可运行 `docker compose ps`、`docker compose logs -f pace-lab`。部署脚本会同时兼容新版 `docker compose` 和旧版 `docker-compose`。
 
 直接通过 HTTP 和 IP 访问可使用视频上传分析；远程摄像头模式需要 HTTPS 域名。该 Demo 默认没有登录功能，公开部署时建议通过反向代理加 HTTPS 和访问控制。反向代理还需允许最大 2 GB 的上传请求。服务提供 `/healthz` 健康检查接口，并固定使用 1 个 Gunicorn worker 来保持任务状态一致。
 
