@@ -48,11 +48,11 @@ def compute_metrics(fps: float, frame_count: int, left_strikes: List[int],
         all_steps.append(step)
     alternating = [b[0] - a[0] for a, b in zip(all_steps, all_steps[1:]) if a[1] != b[1]]
     step_time = round(float(np.mean(alternating) / fps), 3) if alternating else None
-    cadence = round(len(all_steps) / duration * 60, 1) if duration > 0 and len(all_steps) >= 2 else None
     left_stride = _mean_intervals(left_strikes, fps, min_stride, max_stride)
     right_stride = _mean_intervals(right_strikes, fps, min_stride, max_stride)
     stride_values = [v for v in (left_stride, right_stride) if v is not None]
     stride_time = round(float(np.mean(stride_values)), 3) if stride_values else None
+    cadence = round(120 / stride_time, 1) if stride_time else None
     left_knee_rom = _rounded_finite(safe_range(left_knee))
     right_knee_rom = _rounded_finite(safe_range(right_knee))
     hip_combined = np.concatenate([left_hip, right_hip])

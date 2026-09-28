@@ -1,9 +1,10 @@
 services:
   pace-lab:
     build: .
+    init: true
     restart: unless-stopped
     ports:
-      - "127.0.0.1:8000:8000"
+      - "${BIND_ADDRESS:-0.0.0.0}:${PORT:-8000}:8000"
     volumes:
       - pace_data:/data
     healthcheck:

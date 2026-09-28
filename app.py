@@ -19,16 +19,14 @@ import numpy as np
 from flask import Flask, abort, jsonify, render_template, request, send_from_directory, url_for
 
 from config import AnalysisConfig
-from main import analyze, save_report_html, summarize_foot_motion
-from analysis.stability import foot_cycle_analysis
-from biomechanics.foot_tracking import body_scale
+from main import analyze
 from pose.mediapipe_pose import MediaPipePoseEstimator
 
 
 BASE_DIR = Path(__file__).resolve().parent
 JOBS_DIR = Path(os.environ.get("PACE_DATA_DIR", str(BASE_DIR / "output"))).resolve() / "jobs"
 ALLOWED_EXTENSIONS = {".mp4", ".mov", ".avi"}
-ARTIFACTS = {"annotated.mp4", "landmarks.csv", "metrics.json", "report.png", "report.html", "timeline.json"}
+ARTIFACTS = {"annotated.mp4", "player.mp4", "landmarks.csv", "metrics.json", "report.png", "report.pdf", "report.html", "timeline.json"}
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 2 * 1024 * 1024 * 1024
@@ -74,40 +72,6 @@ def source_for_job(job: Dict[str, object], output_dir: Path) -> Optional[Path]:
     return None
 
 
-def upgrade_foot_motion(output_dir: Path, result: Dict[str, object]) -> Dict[str, object]:
-    """Upgrade stored analyses from landmarks without running pose detection again."""
-    timeline_path = output_dir / "timeline.json"
-    if not timeline_path.is_file():
-        return result
-    timeline = json.loads(timeline_path.read_text("utf-8"))
-    if (timeline.get("foot_motion", {}).get("version") == 3 and
-            result.get("foot_motion", {}).get("version") == 3):
-        return result
-    points = np.asarray(timeline["landmarks"], dtype=np.float64)
-    if points.ndim != 3 or points.shape[1:] != (33, 4):
-        return result
-    scales = [body_scale(points[:, shoulder], points[:, hip], points[:, knee], points[:, ankle])
-              for shoulder, hip, knee, ankle in ((11, 23, 25, 27), (12, 24, 26, 28))]
-    metrics = result["metrics"]
-    strikes = {side: metrics.get(f"{side}_foot_strikes", []) for side in ("left", "right")}
-    stamps = np.asarray(timeline.get("timestamps", []), dtype=np.float64)
-    motion = foot_cycle_analysis(points, strikes, float(np.mean(scales)),
-                                 AnalysisConfig().min_visibility, stamps)
-    metrics["foot_path_dispersion_body_ratio"] = motion["overall_dispersion_body_ratio"]
-    metrics["left_right_mean_path_gap_body_ratio"] = motion["side_mean_gap_body_ratio"]
-    result["foot_motion"], result["report"] = summarize_foot_motion(
-        motion, metrics, result.get("feedback", []))
-    timeline["foot_motion"] = motion
-    timeline_tmp = output_dir / "timeline.json.tmp"
-    metrics_tmp = output_dir / "metrics.json.tmp"
-    timeline_tmp.write_text(json.dumps(timeline, ensure_ascii=False, separators=(",", ":")), "utf-8")
-    metrics_tmp.write_text(json.dumps(result, ensure_ascii=False, indent=2, allow_nan=False), "utf-8")
-    timeline_tmp.replace(timeline_path)
-    metrics_tmp.replace(output_dir / "metrics.json")
-    save_report_html(output_dir / "report.html", result)
-    return result
-
-
 def load_existing_jobs() -> None:
     JOBS_DIR.mkdir(parents=True, exist_ok=True)
     for output_dir in JOBS_DIR.iterdir():
@@ -118,8 +82,6 @@ def load_existing_jobs() -> None:
             metadata = json.loads(metadata_path.read_text("utf-8")) if metadata_path.is_file() else {}
             result_path = output_dir / "metrics.json"
             result = json.loads(result_path.read_text("utf-8")) if result_path.is_file() else None
-            if isinstance(result, dict):
-                result = upgrade_foot_motion(output_dir, result)
         except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError):
             continue
         source_files = [path for path in output_dir.glob("source.*") if path.suffix.lower() in ALLOWED_EXTENSIONS]
@@ -178,8 +140,8 @@ class RealtimePoseService:
             "detected": True,
             "landmarks": np.round(pose, 5).tolist(),
             "angles": {
-                "left_knee": joint_angle(23, 25, 27),
-                "right_knee": joint_angle(24, 26, 28),
+            "left_knee": round(180 - joint_angle(23, 25, 27), 1) if joint_angle(23, 25, 27) is not None else None,
+            "right_knee": round(180 - joint_angle(24, 26, 28), 1) if joint_angle(24, 26, 28) is not None else None,
                 "left_hip": joint_angle(11, 23, 25),
                 "right_hip": joint_angle(12, 24, 26),
             },

@@ -93,7 +93,7 @@ async function prepareWorkspace(job) {
   $('#reviewCharts').classList.remove('hidden');
   $('#legacyReportPanel').classList.add('hidden');
   const video = $('#analysisVideo');
-  video.src = job.artifacts.source;
+  video.src = job.artifacts['player.mp4'] || job.artifacts.source;
   video.load();
   renderMetrics(job.result.metrics);
   renderFeedback(job);
@@ -133,6 +133,9 @@ function renderMetrics(metrics) {
 }
 
 function renderFeedback(job) {
+  const pdfButton = $('#exportPdfButton');
+  pdfButton.classList.toggle('hidden', !job.artifacts?.['report.pdf']);
+  if (job.artifacts?.['report.pdf']) pdfButton.href = job.artifacts['report.pdf'];
   const list = $('#feedbackList'); list.replaceChildren();
   job.result.feedback.forEach((value, index) => {
     const item = document.createElement('li');
@@ -140,7 +143,7 @@ function renderFeedback(job) {
   });
   $('#disclaimer').textContent = job.result.disclaimer;
   const downloads = $('#downloadLinks'); downloads.replaceChildren();
-  const files = [['annotated.mp4', '标注视频'], ['metrics.json', '指标 JSON'], ['landmarks.csv', '关键点 CSV'], ['report.png', '分析图'], ['report.html', '简要报告']];
+  const files = [['report.pdf', 'PDF 报告'], ['player.mp4', '可播放视频'], ['annotated.mp4', '标注视频'], ['metrics.json', '指标 JSON'], ['landmarks.csv', '关键点 CSV'], ['report.png', '分析图'], ['report.html', '简要报告']];
   files.forEach(([name, label]) => {
     if (!job.artifacts[name]) return;
     const link = document.createElement('a'); link.href = job.artifacts[name]; link.download = name;
@@ -149,21 +152,23 @@ function renderFeedback(job) {
 }
 
 function renderFootMotion(motion) {
-  const available = motion?.version === 3 && timeline?.foot_motion?.version === 3;
+  const available = motion?.version === 6 && timeline?.foot_motion?.version === 6;
   $('#footMotionPanel').classList.toggle('hidden', !available);
   if (!available) return;
   $('#stabilityStatus').textContent = `${motion.assessment} · 总偏差 ${motion.overall_dispersion_body_ratio ?? '—'}`;
   ['left', 'right'].forEach((side) => {
     const dispersion = motion[side].dispersion_body_ratio;
-    $(`#${side}CycleCount`).textContent = `${motion[side].cycle_count} 周期 / ${motion[side].drawable_count} 可绘制 · 侧内偏差 ${dispersion ?? '—'}`;
+    $(`#${side}CycleCount`).textContent = `${motion[side].cycle_count} 周期 / ${motion[side].included_count} 纳入平均 · 侧内偏差 ${dispersion ?? '—'}`;
     const list = $(`#${side}CycleList`); list.replaceChildren();
     timeline.foot_motion[side].cycles.forEach((cycle) => {
       const item = document.createElement('button'); item.type = 'button'; item.className = 'cycle-item';
+      item.dataset.cycle = cycle.number;
       if (!cycle.path) item.classList.add('unavailable');
+      if (!cycle.included_in_mean) item.classList.add('excluded');
       const number = document.createElement('span'); number.textContent = `#${cycle.number}`;
       const detail = document.createElement('span'); detail.textContent = `${cycle.start_frame}–${cycle.end_frame} 帧 · 可见 ${cycle.visibility_percent}%`;
       const deviation = document.createElement('b');
-      deviation.textContent = cycle.deviation_body_ratio == null ? cycle.status : `偏差 ${cycle.deviation_body_ratio}`;
+      deviation.textContent = cycle.deviation_body_ratio == null ? cycle.status : `${cycle.status} · ${cycle.deviation_body_ratio}`;
       item.append(number, detail, deviation);
       item.addEventListener('pointerenter', () => { footHighlight[side] = cycle.number; drawFootMotionCharts(); });
       item.addEventListener('pointerleave', () => { footHighlight[side] = null; drawFootMotionCharts(); });
@@ -181,15 +186,20 @@ function renderFootMotion(motion) {
       list.append(item);
     });
   });
-  drawFootMotionCharts();
+  drawFootMotionCharts(frameForTime($('#analysisVideo').currentTime, $('#analysisVideo').duration));
 }
 
-function drawFootMotionCharts() {
+function drawFootMotionCharts(frame = frameForTime($('#analysisVideo').currentTime, $('#analysisVideo').duration)) {
   const motion = timeline?.foot_motion;
-  if (motion?.version !== 3 || $('#footMotionPanel').classList.contains('hidden')) return;
-  const allPaths = ['left', 'right'].flatMap((side) => [
-    ...motion[side].cycles.map((cycle) => cycle.path).filter(Boolean), motion[side].mean_path,
+  if (motion?.version !== 6 || $('#footMotionPanel').classList.contains('hidden')) return;
+  const referencePaths = ['left', 'right'].flatMap((side) => [
+    ...motion[side].cycles.filter((cycle) => cycle.included_in_mean).map((cycle) => cycle.path?.filter((_, index) => {
+      const phase = index / (cycle.path.length - 1);
+      return phase >= (cycle.phase_start ?? 0) && phase <= (cycle.phase_end ?? 1);
+    })).filter(Boolean), motion[side].mean_path,
   ]).filter((path) => path?.length);
+  const allPaths = referencePaths.length ? referencePaths : ['left', 'right'].flatMap((side) =>
+    motion[side].cycles.map((cycle) => cycle.path).filter(Boolean));
   const bounds = { minX: Infinity, maxX: -Infinity, minY: Infinity, maxY: -Infinity };
   allPaths.forEach((path) => path.forEach(([x, y]) => {
     bounds.minX = Math.min(bounds.minX, x); bounds.maxX = Math.max(bounds.maxX, x);
@@ -215,12 +225,36 @@ function drawFootMotionCharts() {
     ctx.beginPath(); ctx.moveTo(origin[0], 0); ctx.lineTo(origin[0], height); ctx.moveTo(0, origin[1]); ctx.lineTo(width, origin[1]); ctx.stroke();
     const color = COLORS[side];
     const trace = (path, alpha, lineWidth) => {
+      if (!path?.length) return;
       ctx.strokeStyle = color; ctx.globalAlpha = alpha; ctx.lineWidth = lineWidth; ctx.beginPath();
       path.forEach((point, index) => { const [x, y] = project(point); if (index) ctx.lineTo(x, y); else ctx.moveTo(x, y); });
       ctx.stroke(); ctx.globalAlpha = 1;
     };
-    cycles.forEach((cycle) => { if (cycle.path) trace(cycle.path, cycle.number === footHighlight[side] ? 1 : .3, cycle.number === footHighlight[side] ? 3 : 1.4); });
-    if (motion[side].mean_path?.length) trace(motion[side].mean_path, 1, 4);
+    if (motion[side].mean_path?.length) trace(motion[side].mean_path, .9, 4);
+    cycles.forEach((cycle) => {
+      const active = frame >= cycle.start_frame && frame <= cycle.end_frame;
+      const completed = frame > cycle.end_frame;
+      const item = $(`#${side}CycleList .cycle-item[data-cycle="${cycle.number}"]`);
+      if (item) item.classList.toggle('active', active);
+      if (!cycle.path || (!active && !completed)) return;
+      const first = Math.max(0, Math.ceil((cycle.phase_start ?? 0) * (cycle.path.length - 1)));
+      const last = Math.min(cycle.path.length - 1, Math.floor((cycle.phase_end ?? 1) * (cycle.path.length - 1)));
+      const stamps = timeline.timestamps;
+      const validTime = stamps?.length === timeline.frame_count &&
+        stamps[cycle.end_frame] > stamps[cycle.start_frame];
+      const progress = active ? (validTime
+        ? (stamps[frame] - stamps[cycle.start_frame]) / (stamps[cycle.end_frame] - stamps[cycle.start_frame])
+        : (frame - cycle.start_frame) / (cycle.end_frame - cycle.start_frame)) : 1;
+      const visibleLast = Math.min(last, Math.floor(progress * (cycle.path.length - 1)));
+      const visiblePath = cycle.path.slice(first, visibleLast + 1);
+      const highlighted = active || cycle.number === footHighlight[side];
+      trace(visiblePath, highlighted ? 1 : cycle.included_in_mean ? .3 : .12,
+        highlighted ? 3 : 1.4);
+      if (active && visiblePath.length) {
+        const [x, y] = project(visiblePath.at(-1));
+        ctx.beginPath(); ctx.arc(x, y, 5, 0, 2 * Math.PI); ctx.fillStyle = color; ctx.fill();
+      }
+    });
     ctx.fillStyle = COLORS.muted; ctx.font = '10px ui-monospace, monospace'; ctx.textAlign = 'left';
     ctx.fillText('前后位移 →', 12, height - 10); ctx.fillText('↑ 向上', 12, 17);
     ctx.fillText(`${bounds.minX.toFixed(1)} … ${bounds.maxX.toFixed(1)}`, width - 92, height - 10);
@@ -275,6 +309,7 @@ function updateReview() {
   $('#frameLabel').textContent = `FRAME ${frame + 1} / ${timeline.frame_count}`;
   $('#eventValue').textContent = eventText(timeline.events[String(frame)]);
   drawAllReviewCharts(frame);
+  drawFootMotionCharts(frame);
 }
 
 function eventText(value) {

@@ -37,15 +37,14 @@ def create_report(path: Path, times: np.ndarray, angles: Dict[str, np.ndarray],
     ax1.plot(times, angles["right_knee"], label="Right knee", lw=1.7)
     ax1.set(title="Knee angle", xlabel="Time (s)", ylabel="Angle (deg)")
     ax1.legend()
-    ax2.plot(times, foot_y["left"], label="Left foot Y")
-    ax2.plot(times, foot_y["right"], label="Right foot Y")
+    ax2.plot(times, foot_y["left"], label="Left ankle")
+    ax2.plot(times, foot_y["right"], label="Right ankle")
     for side, color in (("left", "C0"), ("right", "C1")):
         strike_ids = events[f"{side}_strikes"]
         if strike_ids:
             ax2.scatter(times[strike_ids], foot_y[side][strike_ids], marker="v",
                         color=color, edgecolor="black", zorder=5, label=f"{side.title()} strike")
-    ax2.invert_yaxis()
-    ax2.set(title="Foot trajectory and strikes", xlabel="Time (s)", ylabel="Normalized Y")
+    ax2.set(title="Ankle clearance and strikes", xlabel="Time (s)", ylabel="Clearance / leg length")
     ax2.legend(ncol=2, fontsize=8)
     ax3.axis("off")
     ax3.set_title("Running analysis dashboard", fontsize=18, fontweight="bold", loc="left")

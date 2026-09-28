@@ -6,11 +6,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PACE_DATA_DIR=/data
 
 WORKDIR /app
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    libgl1 libglib2.0-0 libx11-6 && rm -rf /var/lib/apt/lists/*
+RUN apt-get -o Acquire::Retries=5 update && apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
+    libgl1 libglib2.0-0 libx11-6 ffmpeg fonts-noto-cjk && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir --timeout 60 --retries 5 -r requirements.txt
 
 COPY app.py main.py config.py ./
 COPY analysis ./analysis

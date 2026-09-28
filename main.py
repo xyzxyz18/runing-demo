@@ -11,6 +11,7 @@ import csv
 import html
 import json
 import sys
+import subprocess
 from pathlib import Path
 from typing import Dict, List, Tuple
 
@@ -21,13 +22,14 @@ from analysis.feedback import build_feedback
 from analysis.metrics import compute_metrics
 from analysis.stability import foot_cycle_analysis
 from biomechanics.angles import angle_series
-from biomechanics.foot_tracking import body_scale
-from biomechanics.gait_events import FootEvents, detect_foot_events
+from biomechanics.foot_tracking import body_scale, leg_length
+from biomechanics.gait_events import FootEvents, detect_ankle_events
 from config import AnalysisConfig
 from pose.mediapipe_pose import LANDMARK_NAMES, MediaPipePoseEstimator
 from pose.smoothing import preprocess_landmarks
 from visualization.plots import create_report
 from visualization.video_overlay import draw_panel, draw_pose
+from visualization.pdf_report import create_pdf_report
 
 
 IDX = {name: i for i, name in enumerate(LANDMARK_NAMES)}
@@ -87,7 +89,7 @@ def extract_pose(video: Path) -> Tuple[np.ndarray, float, int, int, np.ndarray]:
 def side_angles(points: np.ndarray, side: str) -> Dict[str, np.ndarray]:
     p = lambda name: points[:, IDX[f"{side}_{name}"], :]
     return {
-        "knee": angle_series(p("hip"), p("knee"), p("ankle")),
+        "knee": 180 - angle_series(p("hip"), p("knee"), p("ankle")),
         "hip": angle_series(p("shoulder"), p("hip"), p("knee")),
         "ankle": angle_series(p("knee"), p("ankle"), p("foot_index")),
     }
@@ -173,6 +175,7 @@ def summarize_foot_motion(motion: Dict[str, object], metrics: Dict[str, object],
     summary = {
         **{side: {"cycle_count": motion[side]["cycle_count"],
                   "drawable_count": motion[side]["drawable_count"],
+                  "included_count": motion[side]["included_count"],
                   "dispersion_body_ratio": motion[side]["dispersion_body_ratio"]}
            for side in ("left", "right")},
         "version": motion["version"],
@@ -188,8 +191,8 @@ def summarize_foot_motion(motion: Dict[str, object], metrics: Dict[str, object],
         "observations": [
             f"步频：{metrics['cadence_steps_per_min'] if metrics.get('cadence_steps_per_min') is not None else '数据不足'} 步/分钟。",
             f"足部轨迹重复性：{motion['assessment']}；左右检测到的周期分别为 {motion['left']['cycle_count']} 和 {motion['right']['cycle_count']} 个。",
-            f"可绘制周期：左 {motion['left']['drawable_count']} 个，右 {motion['right']['drawable_count']} 个；总体周期偏差为 {motion['overall_dispersion_body_ratio'] if motion['overall_dispersion_body_ratio'] is not None else '数据不足'} 个身体尺度。",
-            f"左右平均轨迹差异：{motion['side_mean_gap_body_ratio'] if motion['side_mean_gap_body_ratio'] is not None else '数据不足'} 个身体尺度。",
+            f"纳入平均周期：左 {motion['left']['included_count']} 个，右 {motion['right']['included_count']} 个；总体周期偏差为 {motion['overall_dispersion_body_ratio'] if motion['overall_dispersion_body_ratio'] is not None else '数据不足'} 个腿长。",
+            f"左右平均轨迹差异：{motion['side_mean_gap_body_ratio'] if motion['side_mean_gap_body_ratio'] is not None else '数据不足'} 个腿长。",
             *feedback,
         ],
         "method": motion["method"],
@@ -234,39 +237,42 @@ def analyze(video: Path, output: Path, config: AnalysisConfig) -> Dict[str, obje
         raise RuntimeError(f"人体检测有效帧仅 {detected_ratio:.1%}，请使用无遮挡的固定侧面全身视频")
     smooth = preprocess_landmarks(raw, fps, config.min_visibility,
                                   config.smoothing_window_seconds)
-    angles = {side: side_angles(smooth, side) for side in ("left", "right")}
+    aspect = width / height if height else 1.0
+    corrected = smooth.copy()
+    corrected[:, :, 0] *= aspect
+    angles = {side: side_angles(corrected, side) for side in ("left", "right")}
     events: Dict[str, FootEvents] = {}
+    clearances = {}
+    leg_lengths = {}
     for side in ("left", "right"):
-        foot = smooth[:, IDX[f"{side}_foot_index"], :]
-        events[side] = detect_foot_events(
-            foot[:, 0], foot[:, 1], fps, config.min_event_interval_seconds,
-            config.ground_percentile, config.strike_velocity_tolerance,
-        )
-    scale = np.mean([
-        body_scale(smooth[:, IDX[f"{s}_shoulder"]], smooth[:, IDX[f"{s}_hip"]],
-                   smooth[:, IDX[f"{s}_knee"]], smooth[:, IDX[f"{s}_ankle"]])
-        for s in ("left", "right")
-    ])
+        leg_lengths[side] = leg_length(smooth, side, aspect, config.min_visibility)
+        events[side], clearances[side] = detect_ankle_events(
+            smooth[:, IDX[f"{side}_ankle"]], leg_lengths[side], fps, config.min_visibility)
+    lengths = [value for value in leg_lengths.values() if np.isfinite(value)]
+    scale = float(np.mean(lengths)) if lengths else 1.0
     metrics = compute_metrics(
         fps, len(smooth), events["left"].strikes, events["right"].strikes,
         angles["left"]["knee"], angles["right"]["knee"],
         angles["left"]["hip"], angles["right"]["hip"],
-        smooth[:, IDX["left_foot_index"]], smooth[:, IDX["right_foot_index"]],
-        smooth[:, IDX["left_hip"]], smooth[:, IDX["right_hip"]], scale,
+        corrected[:, IDX["left_ankle"]], corrected[:, IDX["right_ankle"]],
+        corrected[:, IDX["left_hip"]], corrected[:, IDX["right_hip"]], scale,
         config.min_stride_seconds, config.max_stride_seconds,
     )
     metrics.update({
         "source_video": str(video.resolve()), "fps": round(fps, 3),
+        "video_aspect_ratio": round(aspect, 6),
         "frame_count": len(smooth), "pose_detection_rate": round(detected_ratio, 3),
         "left_foot_strikes": events["left"].strikes,
         "right_foot_strikes": events["right"].strikes,
         "left_toe_offs": events["left"].toe_offs,
         "right_toe_offs": events["right"].toe_offs,
+        "left_leg_length_image_heights": round(leg_lengths["left"], 3) if np.isfinite(leg_lengths["left"]) else None,
+        "right_leg_length_image_heights": round(leg_lengths["right"], 3) if np.isfinite(leg_lengths["right"]) else None,
     })
     feedback = build_feedback(metrics, config)
     foot_motion = foot_cycle_analysis(
         smooth, {side: events[side].strikes for side in ("left", "right")},
-        scale, config.min_visibility, timestamps,
+        scale, config.min_visibility, timestamps, aspect,
     )
     metrics["foot_path_dispersion_body_ratio"] = foot_motion["overall_dispersion_body_ratio"]
     metrics["left_right_mean_path_gap_body_ratio"] = foot_motion["side_mean_gap_body_ratio"]
@@ -288,16 +294,27 @@ def analyze(video: Path, output: Path, config: AnalysisConfig) -> Dict[str, obje
     save_timeline(output / "timeline.json", smooth, fps, timestamps, angles, event_frames, foot_motion)
     save_annotated_video(video, output / "annotated.mp4", smooth, fps, width, height,
                          angles, event_frames, metrics, config)
-    times = np.arange(len(smooth)) / fps
+    times = timestamps
     create_report(
         output / "report.png", times,
         {"left_knee": angles["left"]["knee"], "right_knee": angles["right"]["knee"]},
-        {"left": smooth[:, IDX["left_foot_index"], 1],
-         "right": smooth[:, IDX["right_foot_index"], 1]},
+        {"left": clearances["left"], "right": clearances["right"]},
         {"left_strikes": events["left"].strikes,
          "right_strikes": events["right"].strikes}, metrics, feedback,
     )
+    create_pdf_report(output / "report.pdf", result, times, angles, clearances, foot_motion)
+    create_browser_video(video, output / "player.mp4")
     return result
+
+
+def create_browser_video(source: Path, destination: Path) -> None:
+    """Produce H.264 with a seekable MP4 index for long MOV/AVI and MP4 uploads."""
+    command = ["ffmpeg", "-y", "-loglevel", "error", "-i", str(source),
+               "-map", "0:v:0", "-an", "-vf",
+               "scale=1280:720:force_original_aspect_ratio=decrease:force_divisible_by=2",
+               "-c:v", "libx264", "-preset", "veryfast",
+               "-crf", "25", "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(destination)]
+    subprocess.run(command, check=True, stdout=subprocess.DEVNULL, timeout=7200)
 
 
 def main() -> int:

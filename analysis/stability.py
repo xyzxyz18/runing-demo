@@ -17,9 +17,44 @@ def _rounded(value: Optional[float]) -> Optional[float]:
     return round(float(value), 3) if value is not None and np.isfinite(value) else None
 
 
+def _select_reference_cycles(cycles: List[dict], paths: Dict[int, np.ndarray]) -> List[int]:
+    """Choose complete interior cycles and reject shape outliers around a medoid."""
+    candidates = []
+    for cycle in cycles:
+        number = cycle["number"]
+        if number in (1, len(cycles)):
+            cycle["status"] = "首尾排除"
+        elif cycle["path"] is None:
+            cycle["status"] = "无法绘制"
+        elif (cycle["visibility_percent"] < 70 or cycle["phase_start"] > .1
+              or cycle["phase_end"] < .9 or cycle["max_gap_fraction"] > .2):
+            cycle["status"] = "可见度不足"
+        else:
+            candidates.append(number)
+    if len(candidates) >= 3:
+        matrix = np.stack([paths[number] for number in candidates])
+        distances = np.sqrt(np.mean(np.sum((matrix[:, None] - matrix[None, :]) ** 2, axis=3), axis=2))
+        medoid = int(np.argmin(distances.sum(axis=1)))
+        distance_from_medoid = distances[medoid]
+        center = float(np.median(distance_from_medoid))
+        mad = float(np.median(np.abs(distance_from_medoid - center)))
+        limit = max(.12, center + 3 * 1.4826 * mad)
+        candidates = [number for number, distance in zip(candidates, distance_from_medoid)
+                      if distance <= limit]
+        for cycle in cycles:
+            if (cycle["number"] not in candidates and cycle["status"] == "可比较"):
+                cycle["status"] = "轨迹异常"
+    for cycle in cycles:
+        cycle["included_in_mean"] = cycle["number"] in candidates
+        if cycle["included_in_mean"]:
+            cycle["status"] = "纳入平均"
+    return candidates
+
+
 def foot_cycle_analysis(points: np.ndarray, strikes: Dict[str, List[int]],
                         scale: float, min_visibility: float = 0.45,
-                        timestamps: Optional[np.ndarray] = None) -> Dict[str, object]:
+                        timestamps: Optional[np.ndarray] = None,
+                        aspect: float = 1.0) -> Dict[str, object]:
     """Return all same-side strike intervals, mean paths and per-cycle RMS errors.
 
     Both feet use the midpoint of the visible hips as the origin and the same
@@ -43,19 +78,23 @@ def foot_cycle_analysis(points: np.ndarray, strikes: Dict[str, List[int]],
     output = {}
     all_deviations = []
     for side in ("left", "right"):
-        foot = points[:, INDEX[f"{side}_foot_index"], :]
-        relative = (foot[:, :2] - pelvis) / body_scale
+        foot = points[:, INDEX[f"{side}_ankle"], :]
+        relative = (foot[:, :2] - pelvis) * [aspect, 1.0] / body_scale
         relative[:, 1] *= -1  # Up is positive in the chart.
         visible = (np.isfinite(relative).all(axis=1) &
                    np.isfinite(foot[:, 3]) & (foot[:, 3] >= min_visibility))
         cycles = []
-        paths = []
+        paths = {}
+        raw_paths = {}
         side_strikes = strikes.get(side, [])
         for number, (start, end) in enumerate(zip(side_strikes, side_strikes[1:]), 1):
             record = {
                 "number": number, "start_frame": int(start), "end_frame": int(end),
                 "duration_seconds": None, "visibility_percent": 0,
-                "path": None, "deviation_body_ratio": None, "status": "无法绘制",
+                "path": None, "phase_start": None, "phase_end": None,
+                "max_gap_fraction": None,
+                "deviation_body_ratio": None, "status": "无法绘制",
+                "included_in_mean": False,
             }
             if 0 <= start < end < len(points):
                 if timestamps is not None and len(timestamps) == len(points):
@@ -78,24 +117,48 @@ def foot_cycle_analysis(points: np.ndarray, strikes: Dict[str, List[int]],
                         for axis in (0, 1)
                     ])
                     record["path"] = np.round(path, 4).tolist()
+                    record["phase_start"] = float(source_phase[0])
+                    record["phase_end"] = float(source_phase[-1])
+                    record["max_gap_fraction"] = round(float(np.max(np.diff(source_phase))), 3)
                     record["status"] = "低置信度" if coverage < 0.6 else "可比较"
-                    paths.append(path)
+                    paths[number] = (path, (phase >= source_phase[0]) & (phase <= source_phase[-1]))
+                    raw_paths[number] = path
             cycles.append(record)
 
-        mean = np.mean(np.stack(paths), axis=0) if paths else np.empty((0, 2))
+        selected = _select_reference_cycles(cycles, raw_paths)
+        if selected:
+            # Average corresponding cycle phases only where a landmark was
+            # actually observed. np.interp's constant endpoint extrapolation
+            # must not pull the thick mean line towards an occluded foot.
+            sum_path = np.zeros((SAMPLES_PER_CYCLE, 2))
+            sample_count = np.zeros(SAMPLES_PER_CYCLE, dtype=int)
+            for number in selected:
+                path, observed = paths[number]
+                sum_path[observed] += path[observed]
+                sample_count[observed] += 1
+            mean = np.zeros_like(sum_path)
+            covered = sample_count > 0
+            mean[covered] = sum_path[covered] / sample_count[covered, None]
+            for axis in (0, 1):
+                mean[:, axis] = np.interp(phase, phase[covered], mean[covered, axis])
+        else:
+            mean = np.empty((0, 2))
         deviations = []
         for cycle in cycles:
-            if cycle["path"] is None or len(paths) < 2:
+            if cycle["path"] is None or not selected:
                 continue
-            path = np.asarray(cycle["path"])
-            deviation = float(np.sqrt(np.mean(np.sum((path - mean) ** 2, axis=1))))
+            path = raw_paths[cycle["number"]]
+            observed = (phase >= cycle["phase_start"]) & (phase <= cycle["phase_end"])
+            deviation = float(np.sqrt(np.mean(np.sum((path[observed] - mean[observed]) ** 2, axis=1))))
             cycle["deviation_body_ratio"] = _rounded(deviation)
-            deviations.append(deviation)
-            all_deviations.append(deviation)
+            if cycle["included_in_mean"] and len(selected) >= 2:
+                deviations.append(deviation)
+                all_deviations.append(deviation)
         side_dispersion = float(np.sqrt(np.mean(np.square(deviations)))) if deviations else None
         output[side] = {
             "cycle_count": len(cycles),
             "drawable_count": len(paths),
+            "included_count": len(selected),
             "dispersion_body_ratio": _rounded(side_dispersion),
             "mean_path": np.round(mean, 4).tolist(),
             "cycles": cycles,
@@ -109,10 +172,10 @@ def foot_cycle_analysis(points: np.ndarray, strikes: Dict[str, List[int]],
                 if len(left_mean) and len(right_mean) else None)
     if overall is None:
         assessment = "数据不足"
-        explanation = "同侧至少需要两个可绘制周期，才能计算周期与平均曲线的差异。"
-    elif min(output["left"]["drawable_count"], output["right"]["drawable_count"]) < 3:
+        explanation = "同侧至少需要两个纳入平均的周期，才能计算周期与平均曲线的差异。"
+    elif min(output["left"]["included_count"], output["right"]["included_count"]) < 3:
         assessment = "样本较少"
-        explanation = "已展示全部检测到的周期，但至少一侧不足三个可绘制周期，稳定性结论需谨慎。"
+        explanation = "已展示全部检测到的周期，但至少一侧不足三个纳入平均的周期，稳定性结论需谨慎。"
     elif overall < 0.15:
         assessment = "周期较一致"
         explanation = "各周期相对本侧平均曲线的差异较小。"
@@ -123,11 +186,11 @@ def foot_cycle_analysis(points: np.ndarray, strikes: Dict[str, List[int]],
         assessment = "周期波动较大"
         explanation = "部分周期与本侧平均曲线差异较大，建议结合视频检查关键点与着地检测。"
     return {
-        "version": 3,
+        "version": 6,
         "left": output["left"], "right": output["right"],
         "overall_dispersion_body_ratio": _rounded(overall),
         "side_mean_gap_body_ratio": _rounded(side_gap),
         "assessment": assessment,
         "explanation": explanation,
-        "method": "每侧全部相邻着地事件形成一个周期；足尖相对双髋中点，按身体段长度归一化，按周期相位插值到 64 点。分别计算每个周期与本侧平均曲线的二维均方根距离，再合并为总体偏差。低可见度周期保留显示；少于 3 个可见点的周期列为无法绘制。",
+        "method": "同侧相邻脚踝着地事件形成周期；脚踝相对双髋中点，横坐标按视频宽高比修正，再按腿长归一化。每侧首尾各排除一个周期，中间周期需达到 70% 可见度、覆盖 10%-90% 相位且无超过 20% 周期的观测空缺；对至少三个候选周期，以距离总和最小的代表周期为基准，用中位数和 MAD 筛除明显离群轨迹。平均值仅使用入选周期的实际可见区间。排除周期仍显示但不参与均值和稳定性评分。",
     }

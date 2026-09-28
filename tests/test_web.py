@@ -23,6 +23,18 @@ class WebAppTests(unittest.TestCase):
         response = self.client.get("/")
         self.assertEqual(response.status_code, 200)
         self.assertIn(b"videoInput", response.data)
+        self.assertIn(b"exportPdfButton", response.data)
+
+    def test_pdf_artifact_can_be_downloaded(self):
+        job_id = "pdf-job"
+        folder = Path(self.temp_dir.name) / job_id
+        folder.mkdir()
+        (folder / "report.pdf").write_bytes(b"%PDF-1.4\n")
+        web_app.jobs[job_id] = {"id": job_id, "state": "completed"}
+        response = self.client.get(f"/results/{job_id}/report.pdf")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.mimetype, "application/pdf")
+        response.close()
 
     def test_rejects_missing_or_invalid_video(self):
         self.assertEqual(self.client.post("/api/jobs").status_code, 400)
