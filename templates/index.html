@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PACE LAB · 跑姿分析</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/"><span class="brand-mark"></span><b>PACE</b> LAB</a>
+    <nav class="mode-switch" aria-label="分析模式">
+      <button class="mode-button active" data-mode="upload">视频分析</button>
+      <button class="mode-button" data-mode="camera"><span class="live-dot"></span>实时摄像头</button>
+      <button class="mode-button" data-mode="history">分析历史</button>
+    </nav>
+    <div class="local-badge">● PACE LAB</div>
+  </header>
+
+  <main>
+    <section id="uploadMode" class="mode-page">
+      <div id="uploadHero" class="upload-layout">
+        <div class="headline">
+          <p class="kicker">RUN FORM INTELLIGENCE</p>
+          <h1>看见每一步<br><i>如何发生。</i></h1>
+          <p>上传侧面跑步视频，通过 MediaPipe 骨架与关节角度曲线，逐帧检查你的跑姿。</p>
+          <div class="feature-row"><span>33 关键点</span><span>逐帧同步</span><span>左右侧对比</span></div>
+        </div>
+        <form id="uploadForm" class="upload-box">
+          <label id="dropZone" class="drop-zone" for="videoInput">
+            <input id="videoInput" name="video" type="file" accept="video/mp4,video/quicktime,video/x-msvideo,.mp4,.mov,.avi" hidden>
+            <span class="arrow">↗</span>
+            <strong id="fileName">选择或拖入跑步视频</strong>
+            <small>MP4 / MOV / AVI · 最大 2 GB</small>
+          </label>
+          <button id="analyzeButton" class="action-button" type="submit" disabled>开始分析 <span>→</span></button>
+          <p class="privacy-note">视频在当前服务中处理并保存分析历史</p>
+        </form>
+      </div>
+
+      <section id="statusCard" class="status-strip hidden" aria-live="polite">
+        <span class="loader"></span><div><b id="statusTitle">正在上传</b><p id="statusMessage">准备分析…</p></div>
+      </section>
+
+      <section id="analysisWorkspace" class="workspace hidden">
+        <div class="workspace-title"><div><p class="kicker">MOTION REVIEW</p><h2>动作回放</h2></div><button id="newVideoButton" class="ghost-button">换一个视频</button></div>
+        <article id="legacyReportPanel" class="surface legacy-report hidden"><div class="panel-head"><b>历史分析报告</b><span>旧版结果</span></div><img id="legacyReportImage" alt="历史分析报告"></article>
+        <div id="reviewGrid" class="review-grid">
+          <article class="surface player-panel">
+            <div class="panel-head"><b>POSE OVERLAY</b><span id="frameLabel">FRAME 0</span></div>
+            <div id="videoStage" class="media-stage">
+              <video id="analysisVideo" controls playsinline preload="metadata"></video>
+              <canvas id="poseCanvas"></canvas>
+            </div>
+            <div class="angle-readout">
+              <div><span class="swatch lime"></span><small>左膝</small><strong id="leftKneeValue">—</strong><em>°</em></div>
+              <div><span class="swatch cyan"></span><small>右膝</small><strong id="rightKneeValue">—</strong><em>°</em></div>
+              <div><small>当前事件</small><b id="eventValue">—</b></div>
+            </div>
+          </article>
+          <aside id="metricsPanel" class="metric-stack"></aside>
+        </div>
+        <article id="reviewCharts" class="surface chart-panel">
+          <div class="panel-head"><div><b>关节角度</b><small>拖动视频进度条或点击曲线定位</small></div><div class="legend"><span><i class="lime-bg"></i>左侧</span><span><i class="cyan-bg"></i>右侧</span></div></div>
+          <div class="chart-row"><span>膝关节</span><canvas id="kneeChart"></canvas></div>
+          <div class="chart-row"><span>髋关节</span><canvas id="hipChart"></canvas></div>
+        </article>
+        <article id="footMotionPanel" class="surface foot-panel hidden">
+          <div class="panel-head"><div><b>足部运动平面轨迹</b><small>同侧跨步周期叠加 · 足尖相对髋部 · 身体尺度归一化</small></div><span id="stabilityStatus">—</span></div>
+          <div class="foot-grid">
+            <div><div class="foot-heading"><b>左脚</b><span id="leftCycleCount">—</span></div><canvas id="leftFootChart" aria-label="左脚平面运动轨迹"></canvas></div>
+            <div><div class="foot-heading"><b>右脚</b><span id="rightCycleCount">—</span></div><canvas id="rightFootChart" aria-label="右脚平面运动轨迹"></canvas></div>
+          </div>
+          <p class="foot-note">浅色线为单个跨步周期，亮色线为平均轨迹。周期越重合，当前视频中观察到的动作重复性越高；这不是伤病风险评分。</p>
+        </article>
+        <details id="expandableReport" class="surface expanded-report hidden">
+          <summary><span><small>SUMMARY REPORT</small><b>查看完整分析简报</b></span><span class="report-chevron">⌄</span></summary>
+          <div id="reportContent" class="report-content"></div>
+        </details>
+        <div class="summary-grid">
+          <article class="surface"><div class="panel-head"><b>分析建议</b></div><ul id="feedbackList" class="feedback-list"></ul></article>
+          <article class="surface downloads"><div class="panel-head"><b>导出数据</b></div><div id="downloadLinks"></div><p id="disclaimer"></p></article>
+        </div>
+      </section>
+    </section>
+
+    <section id="cameraMode" class="mode-page hidden">
+      <div class="camera-heading"><div><p class="kicker">LIVE MOTION</p><h1>实时跑姿。</h1><p>面向摄像头保持全身入镜，骨架和关节曲线会连续更新。</p></div><button id="cameraToggle" class="action-button compact">开启摄像头 <span>→</span></button></div>
+      <div class="live-grid">
+        <article class="surface live-video-panel">
+          <div class="panel-head"><b>LIVE POSE</b><span id="liveStatus"><i></i>等待开始</span></div>
+          <div id="cameraStage" class="media-stage camera-stage">
+            <video id="cameraVideo" autoplay muted playsinline></video><canvas id="cameraPoseCanvas"></canvas>
+            <div id="cameraPlaceholder" class="camera-placeholder"><span>◎</span><b>摄像头尚未开启</b><small>启动后请保持全身入镜</small></div>
+          </div>
+          <div class="angle-readout live-readout">
+            <div><span class="swatch lime"></span><small>左膝</small><strong id="liveLeftKnee">—</strong><em>°</em></div>
+            <div><span class="swatch cyan"></span><small>右膝</small><strong id="liveRightKnee">—</strong><em>°</em></div>
+            <div><small>姿态检测</small><b id="detectionValue">等待中</b></div>
+          </div>
+        </article>
+        <article class="surface live-chart-panel">
+          <div class="panel-head"><div><b>实时膝关节曲线</b><small>最近约 15 秒</small></div></div>
+          <canvas id="liveChart"></canvas>
+          <div class="live-tips"><span>01</span><p><b>固定机位</b>摄像头与跑步方向垂直</p><span>02</span><p><b>全身入镜</b>头顶到脚部不要被裁切</p><span>03</span><p><b>光线充足</b>避免背光和剧烈抖动</p></div>
+        </article>
+      </div>
+      <canvas id="captureCanvas" hidden></canvas>
+    </section>
+
+    <section id="historyMode" class="mode-page history-page hidden">
+      <div class="history-heading">
+        <div><p class="kicker">ANALYSIS ARCHIVE</p><h1>分析历史。</h1><p>查看之前的跑姿数据，或使用保留的原视频重新分析。</p></div>
+        <button id="historyUploadButton" class="action-button compact">分析新视频 <span>→</span></button>
+      </div>
+      <div id="historyLoading" class="history-loading"><span class="loader"></span>正在读取历史…</div>
+      <div id="historyGrid" class="history-grid"></div>
+      <div id="historyEmpty" class="history-empty hidden"><b>还没有分析记录</b><p>完成第一次视频分析后，结果会出现在这里。</p></div>
+    </section>
+  </main>
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>

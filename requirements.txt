@@ -1,0 +1,8 @@
+mediapipe==0.10.21
+# MediaPipe already depends on the contrib build; pin it to avoid installing two cv2 wheels.
+opencv-contrib-python==4.11.0.86
+numpy>=1.24,<2
+scipy>=1.10,<2
+matplotlib>=3.7,<4
+Flask>=3.0,<4
+gunicorn>=22,<24
