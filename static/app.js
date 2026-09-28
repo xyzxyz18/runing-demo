@@ -11,6 +11,7 @@ let analysisJob = null;
 let cameraStream = null;
 let cameraRunning = false;
 let liveSeries = { left: [], right: [] };
+const footHighlight = { left: null, right: null };
 
 function switchMode(mode) {
   $$('.mode-button').forEach((button) => button.classList.toggle('active', button.dataset.mode === mode));
@@ -148,36 +149,67 @@ function renderFeedback(job) {
 }
 
 function renderFootMotion(motion) {
-  $('#footMotionPanel').classList.toggle('hidden', !motion);
-  if (!motion) return;
-  $('#stabilityStatus').textContent = motion.assessment;
+  const available = motion?.version === 3 && timeline?.foot_motion?.version === 3;
+  $('#footMotionPanel').classList.toggle('hidden', !available);
+  if (!available) return;
+  $('#stabilityStatus').textContent = `${motion.assessment} · 总偏差 ${motion.overall_dispersion_body_ratio ?? '—'}`;
   ['left', 'right'].forEach((side) => {
     const dispersion = motion[side].dispersion_body_ratio;
-    $(`#${side}CycleCount`).textContent = `${motion[side].cycle_count} 周期 · 偏差 ${dispersion == null ? '—' : dispersion}`;
+    $(`#${side}CycleCount`).textContent = `${motion[side].cycle_count} 周期 / ${motion[side].drawable_count} 可绘制 · 侧内偏差 ${dispersion ?? '—'}`;
+    const list = $(`#${side}CycleList`); list.replaceChildren();
+    timeline.foot_motion[side].cycles.forEach((cycle) => {
+      const item = document.createElement('button'); item.type = 'button'; item.className = 'cycle-item';
+      if (!cycle.path) item.classList.add('unavailable');
+      const number = document.createElement('span'); number.textContent = `#${cycle.number}`;
+      const detail = document.createElement('span'); detail.textContent = `${cycle.start_frame}–${cycle.end_frame} 帧 · 可见 ${cycle.visibility_percent}%`;
+      const deviation = document.createElement('b');
+      deviation.textContent = cycle.deviation_body_ratio == null ? cycle.status : `偏差 ${cycle.deviation_body_ratio}`;
+      item.append(number, detail, deviation);
+      item.addEventListener('pointerenter', () => { footHighlight[side] = cycle.number; drawFootMotionCharts(); });
+      item.addEventListener('pointerleave', () => { footHighlight[side] = null; drawFootMotionCharts(); });
+      item.addEventListener('focus', () => { footHighlight[side] = cycle.number; drawFootMotionCharts(); });
+      item.addEventListener('blur', () => { footHighlight[side] = null; drawFootMotionCharts(); });
+      item.addEventListener('click', () => {
+        const video = $('#analysisVideo');
+        const stamps = timeline.timestamps;
+        if (video.duration && stamps?.length > 1 && stamps.at(-1) > 0) {
+          video.currentTime = video.duration * stamps[cycle.start_frame] / stamps.at(-1);
+        } else if (video.duration && timeline.frame_count > 1) {
+          video.currentTime = video.duration * cycle.start_frame / (timeline.frame_count - 1);
+        }
+      });
+      list.append(item);
+    });
   });
   drawFootMotionCharts();
 }
 
 function drawFootMotionCharts() {
   const motion = timeline?.foot_motion;
-  if (!motion || $('#footMotionPanel').classList.contains('hidden')) return;
+  if (motion?.version !== 3 || $('#footMotionPanel').classList.contains('hidden')) return;
+  const allPaths = ['left', 'right'].flatMap((side) => [
+    ...motion[side].cycles.map((cycle) => cycle.path).filter(Boolean), motion[side].mean_path,
+  ]).filter((path) => path?.length);
+  const bounds = { minX: Infinity, maxX: -Infinity, minY: Infinity, maxY: -Infinity };
+  allPaths.forEach((path) => path.forEach(([x, y]) => {
+    bounds.minX = Math.min(bounds.minX, x); bounds.maxX = Math.max(bounds.maxX, x);
+    bounds.minY = Math.min(bounds.minY, y); bounds.maxY = Math.max(bounds.maxY, y);
+  }));
   for (const side of ['left', 'right']) {
     const { context: ctx, width, height } = fitCanvas($(`#${side}FootChart`));
     ctx.clearRect(0, 0, width, height);
     const cycles = motion[side].cycles || [];
-    const paths = [...cycles, motion[side].mean_path || []].filter((path) => path.length);
-    const all = paths.flat();
-    if (!all.length) {
+    if (!Number.isFinite(bounds.minX) || !cycles.some((cycle) => cycle.path)) {
       ctx.fillStyle = COLORS.muted; ctx.font = '13px system-ui'; ctx.textAlign = 'center';
-      ctx.fillText('有效周期不足', width / 2, height / 2); continue;
+      ctx.fillText('没有可绘制的周期', width / 2, height / 2); continue;
     }
-    const xs = all.map((point) => point[0]);
-    const ys = all.map((point) => point[1]);
-    const minX = Math.min(...xs), maxX = Math.max(...xs), minY = Math.min(...ys), maxY = Math.max(...ys);
-    const span = Math.max(maxX - minX, maxY - minY, .2);
-    const centerX = (minX + maxX) / 2, centerY = (minY + maxY) / 2;
-    const size = Math.min(width - 58, height - 48);
-    const project = ([x, y]) => [width / 2 + (x - centerX) / span * size, height / 2 + (y - centerY) / span * size];
+    const rangeX = Math.max(bounds.maxX - bounds.minX, .2) * 1.14;
+    const rangeY = Math.max(bounds.maxY - bounds.minY, .2) * 1.14;
+    const centerX = (bounds.minX + bounds.maxX) / 2;
+    const centerY = (bounds.minY + bounds.maxY) / 2;
+    const pixelsPerUnit = Math.min((width - 60) / rangeX, (height - 46) / rangeY);
+    const project = ([x, y]) => [width / 2 + (x - centerX) * pixelsPerUnit,
+      height / 2 - (y - centerY) * pixelsPerUnit];
     ctx.strokeStyle = COLORS.grid; ctx.lineWidth = 1;
     const origin = project([0, 0]);
     ctx.beginPath(); ctx.moveTo(origin[0], 0); ctx.lineTo(origin[0], height); ctx.moveTo(0, origin[1]); ctx.lineTo(width, origin[1]); ctx.stroke();
@@ -187,10 +219,11 @@ function drawFootMotionCharts() {
       path.forEach((point, index) => { const [x, y] = project(point); if (index) ctx.lineTo(x, y); else ctx.moveTo(x, y); });
       ctx.stroke(); ctx.globalAlpha = 1;
     };
-    cycles.forEach((path) => trace(path, .18, 1.5));
-    if (motion[side].mean_path?.length) trace(motion[side].mean_path, 1, 3);
+    cycles.forEach((cycle) => { if (cycle.path) trace(cycle.path, cycle.number === footHighlight[side] ? 1 : .3, cycle.number === footHighlight[side] ? 3 : 1.4); });
+    if (motion[side].mean_path?.length) trace(motion[side].mean_path, 1, 4);
     ctx.fillStyle = COLORS.muted; ctx.font = '10px ui-monospace, monospace'; ctx.textAlign = 'left';
-    ctx.fillText('前后位移 →', 12, height - 10); ctx.fillText('↑ 垂直位移', 12, 17);
+    ctx.fillText('前后位移 →', 12, height - 10); ctx.fillText('↑ 向上', 12, 17);
+    ctx.fillText(`${bounds.minX.toFixed(1)} … ${bounds.maxX.toFixed(1)}`, width - 92, height - 10);
   }
 }
 

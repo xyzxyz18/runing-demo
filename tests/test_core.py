@@ -46,10 +46,34 @@ class CoreTests(unittest.TestCase):
             points[:, foot_index, 1] = 0.7 + 0.10 * np.cos(2 * np.pi * phase)
             points[:, foot_index, 3] = 1
         result = foot_cycle_analysis(points, {"left": [0, 40, 80, 120], "right": [0, 40, 80, 120]}, 0.2)
+        self.assertEqual(result["version"], 3)
         self.assertEqual(result["left"]["cycle_count"], 3)
+        self.assertEqual(result["right"]["drawable_count"], 3)
+        self.assertEqual(len(result["left"]["mean_path"]), 64)
+        self.assertTrue(all(cycle["deviation_body_ratio"] is not None for cycle in result["left"]["cycles"]))
         self.assertLess(result["overall_dispersion_body_ratio"], 0.01)
         insufficient = foot_cycle_analysis(points, {"left": [0, 40], "right": []}, 0.2)
         self.assertEqual(insufficient["assessment"], "数据不足")
+
+    def test_all_detected_cycles_remain_visible_and_report_individual_difference(self):
+        frames = 121
+        points = np.full((frames, 33, 4), np.nan)
+        for hip in (23, 24):
+            points[:, hip, :2] = [0.5, 0.5]
+            points[:, hip, 3] = 1
+        for foot in (31, 32):
+            points[:, foot, 0] = 0.5 + 0.1 * np.sin(2 * np.pi * np.arange(frames) / 20)
+            points[:, foot, 1] = 0.7 + 0.1 * np.cos(2 * np.pi * np.arange(frames) / 20)
+            points[:, foot, 3] = 1
+        points[20:40, 31, 0] += 0.06
+        points[41:100, 32, 3] = 0
+        strikes = {"left": [0, 20, 40, 100, 120], "right": [0, 20, 40, 100, 120]}
+        result = foot_cycle_analysis(points, strikes, 0.2)
+        self.assertEqual(result["left"]["cycle_count"], 4)
+        self.assertEqual(result["left"]["cycles"][2]["end_frame"], 100)
+        self.assertGreater(result["left"]["cycles"][1]["deviation_body_ratio"], 0)
+        self.assertEqual(result["right"]["cycle_count"], 4)
+        self.assertEqual(result["right"]["cycles"][2]["status"], "无法绘制")
 
 
 if __name__ == "__main__":

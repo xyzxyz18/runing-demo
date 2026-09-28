@@ -138,11 +138,7 @@ def save_timeline(path: Path, points: np.ndarray, fps: float, timestamps: np.nda
             "right_hip": series(angles["right"]["hip"]),
         },
         "events": {str(frame): label for frame, label in event_map.items()},
-        "foot_motion": {
-            side: {"mean_path": foot_motion[side]["mean_path"],
-                   "cycles": foot_motion[side]["cycles"]}
-            for side in ("left", "right")
-        },
+        "foot_motion": foot_motion,
     }
     with path.open("w", encoding="utf-8") as handle:
         json.dump(payload, handle, ensure_ascii=False, separators=(",", ":"))
@@ -170,6 +166,35 @@ img{{display:block;max-width:100%;margin:20px auto;border-radius:8px}}
 <details><summary>查看图表报告</summary><img src="report.png" alt="分析图表"></details>
 <p>{html.escape(str(result['disclaimer']))}</p></main></body></html>"""
     path.write_text(content, encoding="utf-8")
+
+
+def summarize_foot_motion(motion: Dict[str, object], metrics: Dict[str, object],
+                          feedback: List[str]) -> Tuple[Dict[str, object], Dict[str, object]]:
+    summary = {
+        **{side: {"cycle_count": motion[side]["cycle_count"],
+                  "drawable_count": motion[side]["drawable_count"],
+                  "dispersion_body_ratio": motion[side]["dispersion_body_ratio"]}
+           for side in ("left", "right")},
+        "version": motion["version"],
+        "overall_dispersion_body_ratio": motion["overall_dispersion_body_ratio"],
+        "side_mean_gap_body_ratio": motion["side_mean_gap_body_ratio"],
+        "assessment": motion["assessment"],
+        "explanation": motion["explanation"],
+        "method": motion["method"],
+    }
+    report = {
+        "title": "跑姿分析简报",
+        "summary": motion["explanation"],
+        "observations": [
+            f"步频：{metrics['cadence_steps_per_min'] if metrics.get('cadence_steps_per_min') is not None else '数据不足'} 步/分钟。",
+            f"足部轨迹重复性：{motion['assessment']}；左右检测到的周期分别为 {motion['left']['cycle_count']} 和 {motion['right']['cycle_count']} 个。",
+            f"可绘制周期：左 {motion['left']['drawable_count']} 个，右 {motion['right']['drawable_count']} 个；总体周期偏差为 {motion['overall_dispersion_body_ratio'] if motion['overall_dispersion_body_ratio'] is not None else '数据不足'} 个身体尺度。",
+            f"左右平均轨迹差异：{motion['side_mean_gap_body_ratio'] if motion['side_mean_gap_body_ratio'] is not None else '数据不足'} 个身体尺度。",
+            *feedback,
+        ],
+        "method": motion["method"],
+    }
+    return summary, report
 
 
 def save_annotated_video(source: Path, destination: Path, points: np.ndarray, fps: float,
@@ -241,30 +266,14 @@ def analyze(video: Path, output: Path, config: AnalysisConfig) -> Dict[str, obje
     feedback = build_feedback(metrics, config)
     foot_motion = foot_cycle_analysis(
         smooth, {side: events[side].strikes for side in ("left", "right")},
-        scale, config.min_visibility,
+        scale, config.min_visibility, timestamps,
     )
     metrics["foot_path_dispersion_body_ratio"] = foot_motion["overall_dispersion_body_ratio"]
-    foot_summary = {
-        **{side: {"cycle_count": foot_motion[side]["cycle_count"],
-                  "dispersion_body_ratio": foot_motion[side]["dispersion_body_ratio"]}
-           for side in ("left", "right")},
-        "overall_dispersion_body_ratio": foot_motion["overall_dispersion_body_ratio"],
-        "assessment": foot_motion["assessment"],
-        "explanation": foot_motion["explanation"],
-        "method": foot_motion["method"],
-    }
+    metrics["left_right_mean_path_gap_body_ratio"] = foot_motion["side_mean_gap_body_ratio"]
+    foot_summary, report = summarize_foot_motion(foot_motion, metrics, feedback)
     result = {"metrics": metrics, "feedback": feedback,
               "foot_motion": foot_summary,
-              "report": {
-                  "title": "跑姿分析简报",
-                  "summary": foot_motion["explanation"],
-                  "observations": [
-                      f"步频：{metrics['cadence_steps_per_min'] if metrics['cadence_steps_per_min'] is not None else '数据不足'} 步/分钟。",
-                      f"足部轨迹重复性：{foot_motion['assessment']}；左右有效周期分别为 {foot_motion['left']['cycle_count']} 和 {foot_motion['right']['cycle_count']} 个。",
-                      *feedback,
-                  ],
-                  "method": foot_motion["method"],
-              },
+              "report": report,
               "disclaimer": "二维视频估算结果，仅供运动观察，不用于医疗诊断。"}
     save_landmarks(output / "landmarks.csv", raw, smooth, fps)
     with (output / "metrics.json").open("w", encoding="utf-8") as handle:

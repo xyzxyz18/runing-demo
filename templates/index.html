@@ -66,12 +66,12 @@
           <div class="chart-row"><span>髋关节</span><canvas id="hipChart"></canvas></div>
         </article>
         <article id="footMotionPanel" class="surface foot-panel hidden">
-          <div class="panel-head"><div><b>足部运动平面轨迹</b><small>同侧跨步周期叠加 · 足尖相对髋部 · 身体尺度归一化</small></div><span id="stabilityStatus">—</span></div>
+          <div class="panel-head"><div><b>足部运动平面轨迹</b><small>全部着地间周期 · 足尖相对双髋中点 · 左右共用坐标尺度</small></div><span id="stabilityStatus">—</span></div>
           <div class="foot-grid">
-            <div><div class="foot-heading"><b>左脚</b><span id="leftCycleCount">—</span></div><canvas id="leftFootChart" aria-label="左脚平面运动轨迹"></canvas></div>
-            <div><div class="foot-heading"><b>右脚</b><span id="rightCycleCount">—</span></div><canvas id="rightFootChart" aria-label="右脚平面运动轨迹"></canvas></div>
+            <div><div class="foot-heading"><b>左脚</b><span id="leftCycleCount">—</span></div><canvas id="leftFootChart" aria-label="左脚平面运动轨迹"></canvas><div id="leftCycleList" class="cycle-list"></div></div>
+            <div><div class="foot-heading"><b>右脚</b><span id="rightCycleCount">—</span></div><canvas id="rightFootChart" aria-label="右脚平面运动轨迹"></canvas><div id="rightCycleList" class="cycle-list"></div></div>
           </div>
-          <p class="foot-note">浅色线为单个跨步周期，亮色线为平均轨迹。周期越重合，当前视频中观察到的动作重复性越高；这不是伤病风险评分。</p>
+          <p class="foot-note">细线为每个检测到的周期，粗线为本侧平均轨迹。下方逐周期列出与平均曲线的均方根距离；低可见度周期会标出，无法提取轨迹的周期也保留记录。数值越小，当前视频里的重复性越高。</p>
         </article>
         <details id="expandableReport" class="surface expanded-report hidden">
           <summary><span><small>SUMMARY REPORT</small><b>查看完整分析简报</b></span><span class="report-chevron">⌄</span></summary>
