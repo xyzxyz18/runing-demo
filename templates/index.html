@@ -18,13 +18,22 @@
   </header>
 
   <main>
+    <div class="model-toolbar">
+      <label for="poseModel">姿态模型</label>
+      <select id="poseModel" name="model">
+        <option value="mediapipe">MediaPipe · 33 关键点</option>
+        <option value="rtmpose">RTMPose · 17 关键点</option>
+        <option value="movenet">MoveNet · 17 关键点</option>
+      </select>
+      <small id="modelHint">用于新视频、实时摄像头与历史重新分析</small>
+    </div>
     <section id="uploadMode" class="mode-page">
       <div id="uploadHero" class="upload-layout">
         <div class="headline">
           <p class="kicker">RUN FORM INTELLIGENCE</p>
           <h1>看见每一步<br><i>如何发生。</i></h1>
-          <p>上传侧面跑步视频，通过 MediaPipe 骨架与关节角度曲线，逐帧检查你的跑姿。</p>
-          <div class="feature-row"><span>33 关键点</span><span>逐帧同步</span><span>左右侧对比</span></div>
+          <p>上传侧面跑步视频，通过姿态骨架与关节角度曲线，逐帧检查你的跑姿。</p>
+          <div class="feature-row"><span>三种姿态模型</span><span>逐帧同步</span><span>左右侧对比</span></div>
         </div>
         <form id="uploadForm" class="upload-box">
           <label id="dropZone" class="drop-zone" for="videoInput">
@@ -47,7 +56,7 @@
         <article id="legacyReportPanel" class="surface legacy-report hidden"><div class="panel-head"><b>历史分析报告</b><span>旧版结果</span></div><img id="legacyReportImage" alt="历史分析报告"></article>
         <div id="reviewGrid" class="review-grid">
           <article class="surface player-panel">
-            <div class="panel-head"><b>POSE OVERLAY</b><span id="frameLabel">FRAME 0</span></div>
+            <div class="panel-head"><b id="resultModel">POSE OVERLAY</b><span id="frameLabel">FRAME 0</span></div>
             <div id="videoStage" class="media-stage">
               <video id="analysisVideo" controls playsinline preload="metadata"></video>
               <canvas id="poseCanvas"></canvas>
@@ -66,10 +75,10 @@
           <div class="chart-row"><span>髋关节</span><canvas id="hipChart"></canvas></div>
         </article>
         <article id="footMotionPanel" class="surface foot-panel hidden">
-          <div class="panel-head"><div><b>足部运动平面轨迹</b><small>全部着地间周期 · 脚踝相对双髋中点 · 左右共用坐标尺度</small></div><span id="stabilityStatus">—</span></div>
+          <div class="panel-head"><div><b>脚踝运动平面轨迹</b><small>所有模型统一使用脚踝 · 着地间周期 · 相对双髋中点 · 左右共用坐标尺度</small></div><span id="stabilityStatus">—</span></div>
           <div class="foot-grid">
-            <div><div class="foot-heading"><b>左脚</b><span id="leftCycleCount">—</span></div><canvas id="leftFootChart" aria-label="左脚平面运动轨迹"></canvas><div id="leftCycleList" class="cycle-list"></div></div>
-            <div><div class="foot-heading"><b>右脚</b><span id="rightCycleCount">—</span></div><canvas id="rightFootChart" aria-label="右脚平面运动轨迹"></canvas><div id="rightCycleList" class="cycle-list"></div></div>
+            <div><div class="foot-heading"><b>左脚踝</b><span id="leftCycleCount">—</span></div><canvas id="leftFootChart" aria-label="左脚踝平面运动轨迹"></canvas><div id="leftCycleList" class="cycle-list"></div></div>
+            <div><div class="foot-heading"><b>右脚踝</b><span id="rightCycleCount">—</span></div><canvas id="rightFootChart" aria-label="右脚踝平面运动轨迹"></canvas><div id="rightCycleList" class="cycle-list"></div></div>
           </div>
           <p class="foot-note">每侧首尾各排除一个周期；中间周期需通过可见度与轨迹离群检查。排除周期仍可回放，但不参与粗线平均轨迹和稳定性评分。下方逐周期列出原因及偏差。</p>
         </article>

@@ -1,4 +1,4 @@
-"""Local MediaPipe running-pose analysis CLI.
+"""Local running-pose analysis CLI with selectable pose backends.
 
 Usage:
     python main.py input/test.mp4 --output output
@@ -25,7 +25,8 @@ from biomechanics.angles import angle_series
 from biomechanics.foot_tracking import body_scale, leg_length
 from biomechanics.gait_events import FootEvents, detect_ankle_events
 from config import AnalysisConfig
-from pose.mediapipe_pose import LANDMARK_NAMES, MediaPipePoseEstimator
+from pose.mediapipe_pose import LANDMARK_NAMES
+from pose.backends import MODEL_NAMES, create_estimator, validate_model
 from pose.smoothing import preprocess_landmarks
 from visualization.plots import create_report
 from visualization.video_overlay import draw_panel, draw_pose
@@ -39,6 +40,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="侧面跑步视频姿态与步态分析")
     parser.add_argument("video", type=Path, help="输入 .mp4/.mov/.avi 视频")
     parser.add_argument("--output", type=Path, default=Path("output"), help="输出目录")
+    parser.add_argument("--model", choices=MODEL_NAMES, default="mediapipe", help="姿态识别模型")
     return parser.parse_args()
 
 
@@ -49,7 +51,7 @@ def validate_video(path: Path) -> None:
         raise ValueError("仅支持 .mp4、.mov、.avi 视频")
 
 
-def extract_pose(video: Path) -> Tuple[np.ndarray, float, int, int, np.ndarray]:
+def extract_pose(video: Path, model: str = "mediapipe") -> Tuple[np.ndarray, float, int, int, np.ndarray]:
     capture = cv2.VideoCapture(str(video))
     if not capture.isOpened():
         raise RuntimeError(f"OpenCV 无法打开视频: {video}")
@@ -59,21 +61,23 @@ def extract_pose(video: Path) -> Tuple[np.ndarray, float, int, int, np.ndarray]:
     total = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
     frames: List[np.ndarray] = []
     timestamps: List[float] = []
-    with MediaPipePoseEstimator() as estimator:
-        index = 0
-        while True:
-            ok, frame = capture.read()
-            if not ok:
-                break
-            timestamp = float(capture.get(cv2.CAP_PROP_POS_MSEC)) / 1000.0
-            result = estimator.process(frame)
-            frames.append(result.landmarks if result.landmarks is not None
-                          else np.full((33, 4), np.nan))
-            timestamps.append(timestamp)
-            index += 1
-            if index % max(1, int(fps * 2)) == 0:
-                print(f"\r姿态检测: {index}/{total or '?'} 帧", end="", flush=True)
-    capture.release()
+    try:
+        with create_estimator(model) as estimator:
+            index = 0
+            while True:
+                ok, frame = capture.read()
+                if not ok:
+                    break
+                timestamp = float(capture.get(cv2.CAP_PROP_POS_MSEC)) / 1000.0
+                result = estimator.process(frame)
+                frames.append(result.landmarks if result.landmarks is not None
+                              else np.full((33, 4), np.nan))
+                timestamps.append(timestamp)
+                index += 1
+                if index % max(1, int(fps * 2)) == 0:
+                    print(f"\r姿态检测: {index}/{total or '?'} 帧", end="", flush=True)
+    finally:
+        capture.release()
     print()
     if not frames:
         raise RuntimeError("视频不包含可读取的帧")
@@ -173,7 +177,9 @@ img{{display:block;max-width:100%;margin:20px auto;border-radius:8px}}
 def summarize_foot_motion(motion: Dict[str, object], metrics: Dict[str, object],
                           feedback: List[str]) -> Tuple[Dict[str, object], Dict[str, object]]:
     summary = {
-        **{side: {"cycle_count": motion[side]["cycle_count"],
+        **{side: {"landmark": f"{side}_ankle",
+                  "landmark_index": IDX[f"{side}_ankle"],
+                  "cycle_count": motion[side]["cycle_count"],
                   "drawable_count": motion[side]["drawable_count"],
                   "included_count": motion[side]["included_count"],
                   "dispersion_body_ratio": motion[side]["dispersion_body_ratio"]}
@@ -190,7 +196,7 @@ def summarize_foot_motion(motion: Dict[str, object], metrics: Dict[str, object],
         "summary": motion["explanation"],
         "observations": [
             f"步频：{metrics['cadence_steps_per_min'] if metrics.get('cadence_steps_per_min') is not None else '数据不足'} 步/分钟。",
-            f"足部轨迹重复性：{motion['assessment']}；左右检测到的周期分别为 {motion['left']['cycle_count']} 和 {motion['right']['cycle_count']} 个。",
+            f"脚踝轨迹重复性：{motion['assessment']}；左右检测到的周期分别为 {motion['left']['cycle_count']} 和 {motion['right']['cycle_count']} 个。",
             f"纳入平均周期：左 {motion['left']['included_count']} 个，右 {motion['right']['included_count']} 个；总体周期偏差为 {motion['overall_dispersion_body_ratio'] if motion['overall_dispersion_body_ratio'] is not None else '数据不足'} 个腿长。",
             f"左右平均轨迹差异：{motion['side_mean_gap_body_ratio'] if motion['side_mean_gap_body_ratio'] is not None else '数据不足'} 个腿长。",
             *feedback,
@@ -228,10 +234,11 @@ def save_annotated_video(source: Path, destination: Path, points: np.ndarray, fp
     writer.release()
 
 
-def analyze(video: Path, output: Path, config: AnalysisConfig) -> Dict[str, object]:
+def analyze(video: Path, output: Path, config: AnalysisConfig, model: str = "mediapipe") -> Dict[str, object]:
+    validate_model(model)
     validate_video(video)
     output.mkdir(parents=True, exist_ok=True)
-    raw, fps, width, height, timestamps = extract_pose(video)
+    raw, fps, width, height, timestamps = extract_pose(video, model)
     detected_ratio = float(np.isfinite(raw[:, :, 0]).any(axis=1).mean())
     if detected_ratio < 0.2:
         raise RuntimeError(f"人体检测有效帧仅 {detected_ratio:.1%}，请使用无遮挡的固定侧面全身视频")
@@ -260,6 +267,8 @@ def analyze(video: Path, output: Path, config: AnalysisConfig) -> Dict[str, obje
     )
     metrics.update({
         "source_video": str(video.resolve()), "fps": round(fps, 3),
+        "pose_model": model, "pose_model_name": MODEL_NAMES[model],
+        "pose_keypoint_count": 33 if model == "mediapipe" else 17,
         "video_aspect_ratio": round(aspect, 6),
         "frame_count": len(smooth), "pose_detection_rate": round(detected_ratio, 3),
         "left_foot_strikes": events["left"].strikes,
@@ -320,7 +329,7 @@ def create_browser_video(source: Path, destination: Path) -> None:
 def main() -> int:
     args = parse_args()
     try:
-        result = analyze(args.video, args.output, AnalysisConfig())
+        result = analyze(args.video, args.output, AnalysisConfig(), args.model)
     except (ValueError, RuntimeError) as exc:
         print(f"错误: {exc}", file=sys.stderr)
         return 1

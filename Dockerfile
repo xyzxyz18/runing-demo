@@ -14,6 +14,8 @@ RUN pip install --no-cache-dir --timeout 20 --retries 2 -r requirements.txt || \
     pip install --no-cache-dir --timeout 60 --retries 5 \
       --index-url https://mirrors.aliyun.com/pypi/simple -r requirements.txt
 
+ENV XDG_CACHE_HOME=/data/.cache
+
 COPY app.py main.py config.py ./
 COPY analysis ./analysis
 COPY biomechanics ./biomechanics

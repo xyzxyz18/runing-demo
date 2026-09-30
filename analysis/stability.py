@@ -57,7 +57,8 @@ def foot_cycle_analysis(points: np.ndarray, strikes: Dict[str, List[int]],
                         aspect: float = 1.0) -> Dict[str, object]:
     """Return all same-side strike intervals, mean paths and per-cycle RMS errors.
 
-    Both feet use the midpoint of the visible hips as the origin and the same
+    All pose backends track the left/right ankle only.
+    Both ankles use the midpoint of the visible hips as the origin and the same
     body-segment scale. Image Y is inverted so positive Y means upward motion.
     Intervals with too few visible points remain listed but have no path/error.
     """
@@ -78,11 +79,12 @@ def foot_cycle_analysis(points: np.ndarray, strikes: Dict[str, List[int]],
     output = {}
     all_deviations = []
     for side in ("left", "right"):
-        foot = points[:, INDEX[f"{side}_ankle"], :]
-        relative = (foot[:, :2] - pelvis) * [aspect, 1.0] / body_scale
+        landmark = f"{side}_ankle"
+        ankle = points[:, INDEX[landmark], :]
+        relative = (ankle[:, :2] - pelvis) * [aspect, 1.0] / body_scale
         relative[:, 1] *= -1  # Up is positive in the chart.
         visible = (np.isfinite(relative).all(axis=1) &
-                   np.isfinite(foot[:, 3]) & (foot[:, 3] >= min_visibility))
+                   np.isfinite(ankle[:, 3]) & (ankle[:, 3] >= min_visibility))
         cycles = []
         paths = {}
         raw_paths = {}
@@ -156,6 +158,8 @@ def foot_cycle_analysis(points: np.ndarray, strikes: Dict[str, List[int]],
                 all_deviations.append(deviation)
         side_dispersion = float(np.sqrt(np.mean(np.square(deviations)))) if deviations else None
         output[side] = {
+            "landmark": landmark,
+            "landmark_index": INDEX[landmark],
             "cycle_count": len(cycles),
             "drawable_count": len(paths),
             "included_count": len(selected),

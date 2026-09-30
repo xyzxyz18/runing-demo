@@ -20,7 +20,7 @@ from flask import Flask, abort, jsonify, render_template, request, send_from_dir
 
 from config import AnalysisConfig
 from main import analyze
-from pose.mediapipe_pose import MediaPipePoseEstimator
+from pose.backends import create_estimator, validate_model
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -67,6 +67,7 @@ def persist_job_metadata(job_id: str, job: Dict[str, object]) -> None:
         "filename": job.get("filename", "历史视频"),
         "source_filename": job.get("source_filename", ""),
         "created_at": job.get("created_at"),
+        "model": job.get("model", "mediapipe"),
     }
     path = JOBS_DIR / job_id / "job.json"
     with path.open("w", encoding="utf-8") as handle:
@@ -109,6 +110,7 @@ def load_existing_jobs() -> None:
         state = "completed" if result else "failed"
         job = {
             "id": output_dir.name,
+            "model": metadata.get("model") or (result or {}).get("metrics", {}).get("pose_model", "mediapipe"),
             "filename": metadata.get("filename") or fallback_name,
             "source_filename": source_name,
             "created_at": created_at,
@@ -122,28 +124,38 @@ def load_existing_jobs() -> None:
 
 
 class RealtimePoseService:
-    """Keep MediaPipe on one dedicated thread for browser-camera frames."""
+    """Keep pose estimators on one dedicated thread for browser-camera frames."""
 
     def __init__(self) -> None:
         self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="realtime-pose")
         self.estimator = None
+        self.model = None
 
-    def process(self, encoded: bytes) -> Dict[str, object]:
-        return self.executor.submit(self._process, encoded).result(timeout=10)
+    def process(self, encoded: bytes, model: str = "mediapipe") -> Dict[str, object]:
+        return self.executor.submit(self._process, encoded, model).result()
 
-    def _process(self, encoded: bytes) -> Dict[str, object]:
+    def _process(self, encoded: bytes, model: str = "mediapipe") -> Dict[str, object]:
+        validate_model(model)
         frame = cv2.imdecode(np.frombuffer(encoded, dtype=np.uint8), cv2.IMREAD_COLOR)
         if frame is None:
             raise ValueError("无法解码摄像头画面")
-        if self.estimator is None:
-            self.estimator = MediaPipePoseEstimator(0.55, 0.55)
+        if self.estimator is None or self.model != model:
+            if self.estimator is not None:
+                self.estimator.close()
+            self.estimator = None
+            self.model = None
+            self.estimator = create_estimator(model)
+            self.model = model
         pose = self.estimator.process(frame).landmarks
         if pose is None:
             return {"detected": False}
 
         def joint_angle(a: int, vertex: int, c: int):
-            u = pose[a, :2] - pose[vertex, :2]
-            v = pose[c, :2] - pose[vertex, :2]
+            if not np.all(np.isfinite(pose[[a, vertex, c], :2])) or np.any(pose[[a, vertex, c], 3] < 0.5):
+                return None
+            aspect = frame.shape[1] / frame.shape[0]
+            u = (pose[a, :2] - pose[vertex, :2]) * [aspect, 1]
+            v = (pose[c, :2] - pose[vertex, :2]) * [aspect, 1]
             denominator = np.linalg.norm(u) * np.linalg.norm(v)
             if denominator < 1e-9:
                 return None
@@ -152,7 +164,8 @@ class RealtimePoseService:
 
         return {
             "detected": True,
-            "landmarks": np.round(pose, 5).tolist(),
+            "model": model,
+            "landmarks": [[round(float(v), 5) if np.isfinite(v) else None for v in p] for p in pose],
             "angles": {
             "left_knee": round(180 - joint_angle(23, 25, 27), 1) if joint_angle(23, 25, 27) is not None else None,
             "right_knee": round(180 - joint_angle(24, 26, 28), 1) if joint_angle(24, 26, 28) is not None else None,
@@ -173,7 +186,9 @@ def update_job(job_id: str, **values: object) -> None:
 def run_analysis(job_id: str, source: Path, output_dir: Path) -> None:
     update_job(job_id, state="running", message="正在识别人体姿态并计算跑姿指标…")
     try:
-        result = analyze(source, output_dir, AnalysisConfig())
+        with jobs_lock:
+            model = str(jobs[job_id].get("model", "mediapipe"))
+        result = analyze(source, output_dir, AnalysisConfig(), model)
         artifacts = artifact_urls(job_id, output_dir, source.name)
         update_job(job_id, state="completed", message="分析完成", result=result, artifacts=artifacts)
     except Exception as exc:  # Turn pipeline errors into an actionable UI message.
@@ -215,6 +230,11 @@ def create_job():
     if suffix not in ALLOWED_EXTENSIONS:
         return jsonify(error="仅支持 MP4、MOV 或 AVI 视频"), 400
 
+    try:
+        model = validate_model(request.form.get("model", "mediapipe"))
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
+
     job_id = uuid.uuid4().hex
     output_dir = JOBS_DIR / job_id
     output_dir.mkdir(parents=True, exist_ok=False)
@@ -223,6 +243,7 @@ def create_job():
     with jobs_lock:
         jobs[job_id] = {
             "id": job_id,
+            "model": model,
             "state": "queued",
             "message": "视频已上传，等待开始分析…",
             "filename": upload.filename,
@@ -256,6 +277,14 @@ def reanalyze_job(job_id: str):
     if source is None:
         return jsonify(error="原视频已不存在，无法重新分析"), 409
 
+    payload = request.get_json(silent=True) or {}
+    if not isinstance(payload, dict):
+        return jsonify(error="请求必须是 JSON 对象"), 400
+    try:
+        model = validate_model(payload.get("model", previous.get("model", "mediapipe")))
+    except (ValueError, TypeError) as exc:
+        return jsonify(error=str(exc)), 400
+
     new_id = uuid.uuid4().hex
     output_dir = JOBS_DIR / new_id
     output_dir.mkdir(parents=True, exist_ok=False)
@@ -263,6 +292,7 @@ def reanalyze_job(job_id: str):
     shutil.copy2(source, copied_source)
     new_job = {
         "id": new_id,
+        "model": model,
         "state": "queued",
         "message": "已加入重新分析队列…",
         "filename": previous.get("filename", source.name),
@@ -318,7 +348,7 @@ def realtime_frame():
     if not encoded or len(encoded) > 3 * 1024 * 1024:
         return jsonify(error="摄像头画面无效或过大"), 400
     try:
-        return jsonify(realtime_pose.process(encoded))
+        return jsonify(realtime_pose.process(encoded, request.args.get("model", "mediapipe")))
     except (ValueError, RuntimeError) as exc:
         return jsonify(error=str(exc)), 400
 

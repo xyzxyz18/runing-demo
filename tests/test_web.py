@@ -1,4 +1,5 @@
 import io
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -100,6 +101,36 @@ class WebAppTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 409)
         self.assertTrue(folder.exists())
+
+    @patch.object(web_app.executor, 'submit')
+    def test_model_is_queued_persisted_and_preserved_on_reload(self, submit):
+        response = self.client.post('/api/jobs', data={
+            'video': (io.BytesIO(b'video'), 'test.mp4'), 'model': 'rtmpose'})
+        job_id = response.get_json()['id']
+        self.assertEqual(web_app.jobs[job_id]['model'], 'rtmpose')
+        metadata = json.loads((web_app.JOBS_DIR / job_id / 'job.json').read_text())
+        self.assertEqual(metadata['model'], 'rtmpose')
+        web_app.jobs.clear()
+        web_app.load_existing_jobs()
+        self.assertEqual(web_app.jobs[job_id]['model'], 'rtmpose')
+        response = self.client.post(f'/api/jobs/{job_id}/reanalyze', json={'model': 'movenet'})
+        new_id = response.get_json()['id']
+        self.assertEqual(web_app.jobs[new_id]['model'], 'movenet')
+        self.assertEqual(web_app.jobs[job_id]['model'], 'rtmpose')
+
+    @patch.object(web_app.executor, 'submit')
+    def test_invalid_model_does_not_create_job(self, submit):
+        response = self.client.post('/api/jobs', data={
+            'video': (io.BytesIO(b'video'), 'test.mp4'), 'model': 'invalid'})
+        self.assertEqual(response.status_code, 400)
+        self.assertFalse(web_app.jobs)
+        submit.assert_not_called()
+
+    @patch.object(web_app.realtime_pose, 'process', return_value={'detected': False})
+    def test_realtime_forwards_selected_model(self, process):
+        response = self.client.post('/api/realtime/pose?model=movenet', data=b'jpeg', content_type='image/jpeg')
+        self.assertEqual(response.status_code, 200)
+        process.assert_called_once_with(b'jpeg', 'movenet')
 
 
 if __name__ == "__main__":

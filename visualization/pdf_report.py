@@ -18,8 +18,8 @@ LABELS = [
     ('膝关节活动范围', 'knee_rom_degrees', '度'), ('髋关节活动范围', 'hip_rom_degrees', '度'),
     ('跨步时间左右差', 'stride_time_asymmetry_percent', '%'),
     ('平均着地偏移', 'mean_foot_strike_offset_body_ratio', '腿长'),
-    ('轨迹周期偏差', 'foot_path_dispersion_body_ratio', '腿长'),
-    ('左右平均轨迹差', 'left_right_mean_path_gap_body_ratio', '腿长'),
+    ('脚踝轨迹周期偏差', 'foot_path_dispersion_body_ratio', '腿长'),
+    ('左右脚踝平均轨迹差', 'left_right_mean_path_gap_body_ratio', '腿长'),
 ]
 
 
@@ -72,7 +72,7 @@ def create_pdf_report(path: Path, result: dict, times: np.ndarray, angles: dict,
             path_points = np.asarray(motion[side]['mean_path'], dtype=float)
             if path_points.ndim == 2 and len(path_points):
                 axes[2].plot(path_points[:, 0], path_points[:, 1], color=palette[side],
-                             label=f'{side.title()} mean', lw=2)
+                             label=f'{side.title()} ankle mean', lw=2)
                 axes[2].scatter(path_points[0, 0], path_points[0, 1], color=palette[side], s=20)
         axes[0].set(ylabel='Angle (deg)', title='Joint angle curves')
         axes[1].set(xlabel='Time (s)', ylabel='Clearance / leg length', title='Ankle clearance')
